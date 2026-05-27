@@ -7,6 +7,7 @@
  */
 
 #include <studentSolution/gpu.hpp>
+#include <cstring>
 
 #include "Tracy.hpp"
 
@@ -50,109 +51,167 @@ void set_draw_id(GPUMemory& mem, SetDrawIdCommand& cm) {
     mem.gl_DrawID = cm.id;
 }
 
-void write_frag_color(Framebuffer* fbo, const glm::uvec2 pos, const glm::vec4 color) {
+void write_frag_color(Framebuffer& fbo, const glm::uvec2 pos, const glm::vec4 color) {
     void *pixel_start;
-    if(fbo->yReversed)
-        pixel_start = getPixel(fbo->color, pos.x, fbo->height - 1 - pos.y);
-    else
-        pixel_start = getPixel(fbo->color, pos.x, pos.y);
+    pixel_start = getPixel(fbo.color, pos.x, fbo.yReversed ? fbo.height - 1 - pos.y : pos.y);
 
-
-    if(fbo->color.format == Image::U8) {
-        glm::vec4 clamped_color = glm::clamp(color, 0.0f, 1.0f);
+    if(fbo.color.format == Image::U8) {
+        glm::vec4 out_color = glm::clamp(color, 0.0f, 1.0f) * 255.0f;
         std::uint8_t *pixel = reinterpret_cast<std::uint8_t*>(pixel_start);
-        for(uint32_t i = 0; i < fbo->color.channels; i++) {
-            pixel[i] = 255 * clamped_color[fbo->color.channelTypes[i]];
+        switch(fbo.color.channels) {
+            case 4:
+                pixel[3] = out_color[fbo.color.channelTypes[3]];
+            case 3:
+                pixel[2] = out_color[fbo.color.channelTypes[2]];
+            case 2:
+                pixel[1] = out_color[fbo.color.channelTypes[1]];
+            case 1:
+                pixel[0] = out_color[fbo.color.channelTypes[0]];
+            case 0:
+            default:
+                break;
         }
+        //for(uint32_t i = 0; i < fbo.color.channels; i++) {
+        //    pixel[i] = 255.0f * clamped_color[fbo.color.channelTypes[i]];
+        //}
     }
-    else if(fbo->color.format == Image::F32) {
+    else {
         float *pixel = reinterpret_cast<float*>(pixel_start);
-        for(uint32_t i = 0; i < fbo->color.channels; i++) {
-            pixel[i] = color[fbo->color.channelTypes[i]];
+        switch(fbo.color.channels) {
+            case 4:
+                pixel[3] = color[fbo.color.channelTypes[3]];
+            case 3:
+                pixel[2] = color[fbo.color.channelTypes[2]];
+            case 2:
+                pixel[1] = color[fbo.color.channelTypes[1]];
+            case 1:
+                pixel[0] = color[fbo.color.channelTypes[0]];
+            case 0:
+            default:
+                break;
         }
+        //for(uint32_t i = 0; i < fbo.color.channels; i++) {
+        //    pixel[i] = color[fbo.color.channelTypes[i]];
+        //}
     }
 }
 
-glm::vec4 read_frag_color(Framebuffer* fbo, const glm::uvec2 pos) {
+glm::vec4 read_frag_color(Framebuffer& fbo, const glm::uvec2& pos) {
     glm::vec4 color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
     void *pixel_start;
-    if(fbo->yReversed)
-        pixel_start = getPixel(fbo->color, pos.x, fbo->height - 1 - pos.y);
-    else
-        pixel_start = getPixel(fbo->color, pos.x, pos.y);
+    pixel_start = getPixel(fbo.color, pos.x, fbo.yReversed ? fbo.height - 1 - pos.y : pos.y);
 
-    constexpr float max_inverted = 1/255.0f;
+    constexpr float max_inverted = 1.0f / 255.0f;
 
-    if(fbo->color.format == Image::U8) {
+    if(fbo.color.format == Image::U8) {
         std::uint8_t *pixel = reinterpret_cast<std::uint8_t*>(pixel_start);
-        for(uint32_t i = 0; i < fbo->color.channels; i++) {
-            color[fbo->color.channelTypes[i]] = pixel[i] * max_inverted;
+        for(uint32_t i = 0; i < fbo.color.channels; i++) {
+            color[fbo.color.channelTypes[i]] = pixel[i] * max_inverted;
         }
     }
-    else if(fbo->color.format == Image::F32) {
+    else {
         float *pixel = reinterpret_cast<float*>(pixel_start);
-        for(uint32_t i = 0; i < fbo->color.channels; i++) {
-            color[fbo->color.channelTypes[i]] = pixel[i];
+        for(uint32_t i = 0; i < fbo.color.channels; i++) {
+            color[fbo.color.channelTypes[i]] = pixel[i];
         }
     }
     return color;
 }
 
-void write_frag_depth(Framebuffer* fbo, const glm::uvec2 pos, const float depth) {
-    float *frag_depth;
-    if(fbo->yReversed)
-        frag_depth = reinterpret_cast<float*>(getPixel(fbo->depth, pos.x, fbo->height - 1 - pos.y));
-    else
-        frag_depth = reinterpret_cast<float*>(getPixel(fbo->depth, pos.x, pos.y));
+inline void write_frag_depth(Framebuffer& fbo, const glm::uvec2& pos, const float depth) {
+    float *frag_depth = reinterpret_cast<float*>(getPixel(fbo.depth, pos.x, fbo.yReversed ? fbo.height - 1 - pos.y : pos.y));
     *frag_depth = depth;
 }
 
-void write_frag_stencil(Framebuffer* fbo, const glm::uvec2 pos, const std::uint8_t stencil) {
-    void *pixel_start;
-    if(fbo->yReversed)
-        pixel_start = getPixel(fbo->stencil, pos.x, fbo->height - 1 - pos.y);
-    else
-        pixel_start = getPixel(fbo->stencil, pos.x, pos.y);
-    *reinterpret_cast<uint8_t*>(pixel_start) = stencil;
+inline void write_frag_stencil(Framebuffer& fbo, const glm::uvec2& pos, const std::uint8_t stencil) {
+    uint8_t *pixel_stencil = reinterpret_cast<uint8_t*>(getPixel(fbo.stencil, pos.x, fbo.yReversed ? fbo.height - 1 - pos.y : pos.y));
+    *pixel_stencil = stencil;
 }
 
 void clear_color(GPUMemory& mem, ClearColorCommand& cm) {
-    Framebuffer *fbo = mem.framebuffers + mem.activatedFramebuffer;
+    Framebuffer& fbo = mem.framebuffers[mem.activatedFramebuffer];
 
-    if(fbo->color.data == nullptr) return;
+    if(fbo.color.data == nullptr) return;
 
-    // TODO this can probably be optimized
-    for(std::uint32_t y = 0; y < fbo->height; y++) {
-        for(std::uint32_t x = 0; x < fbo->width; x++) {
-            write_frag_color(fbo, glm::uvec2(x, y), cm.value);
+    // doesn't care about yReversed
+    void *pixel_start = fbo.color.data;
+
+    // write to first pixel
+    if(fbo.color.format == Image::U8) {
+        glm::vec4 clamped_color = glm::clamp(cm.value, 0.0f, 1.0f);
+        std::uint8_t *pixel = reinterpret_cast<std::uint8_t*>(pixel_start);
+        for(uint32_t i = 0; i < fbo.color.channels; i++) {
+            pixel[i] = 255.0f * clamped_color[fbo.color.channelTypes[i]];
         }
     }
+    else if(fbo.color.format == Image::F32) {
+        float *pixel = reinterpret_cast<float*>(pixel_start);
+        for(uint32_t i = 0; i < fbo.color.channels; i++) {
+            pixel[i] = cm.value[fbo.color.channelTypes[i]];
+        }
+    }
+
+    const uint8_t *copy_end = reinterpret_cast<uint8_t*>(fbo.color.data) + fbo.height * fbo.width * fbo.color.bytesPerPixel;
+    uint8_t *insert_start = reinterpret_cast<uint8_t*>(fbo.color.data) + fbo.color.bytesPerPixel;
+    size_t copy_bytes = fbo.color.bytesPerPixel;
+
+    // exponentialy copy the pixels
+    while(insert_start + copy_bytes < copy_end) {
+        std::memcpy(insert_start, fbo.color.data, copy_bytes);
+        insert_start += copy_bytes;
+        copy_bytes <<= 1;
+    }
+
+    // copy the remainder
+    std::memcpy(insert_start, fbo.color.data, copy_end - insert_start);
 }
 
 void clear_depth(GPUMemory& mem, ClearDepthCommand& cm) {
-    Framebuffer *fbo = mem.framebuffers + mem.activatedFramebuffer;
+    Framebuffer& fbo = mem.framebuffers[mem.activatedFramebuffer];
 
-    if(fbo->depth.data == nullptr) return;
+    if(fbo.depth.data == nullptr) return;
 
-    // TODO this can probably be optimized
-    for(std::uint32_t y = 0; y < fbo->height; y++) {
-        for(std::uint32_t x = 0; x < fbo->width; x++) {
-            write_frag_depth(fbo, glm::uvec2(x, y), cm.value);
-        }
+    // write to first pixel
+    float *first = reinterpret_cast<float*>(fbo.depth.data);
+    *first = cm.value;
+
+    const uint8_t *copy_end = reinterpret_cast<uint8_t*>(fbo.depth.data) + fbo.height * fbo.width * fbo.depth.bytesPerPixel;
+    uint8_t *insert_start = reinterpret_cast<uint8_t*>(fbo.depth.data) + fbo.depth.bytesPerPixel;
+    size_t copy_bytes = fbo.depth.bytesPerPixel;
+
+    // exponentialy copy the pixels
+    while(insert_start + copy_bytes < copy_end) {
+        std::memcpy(insert_start, fbo.depth.data, copy_bytes);
+        insert_start += copy_bytes;
+        copy_bytes <<= 1;
     }
+
+    // copy the remainder
+    std::memcpy(insert_start, fbo.depth.data, copy_end - insert_start);
 }
 
 void clear_stencil(GPUMemory& mem, ClearStencilCommand& cm) {
-    Framebuffer *fbo = mem.framebuffers + mem.activatedFramebuffer;
+    Framebuffer& fbo = mem.framebuffers[mem.activatedFramebuffer];
 
-    if(fbo->stencil.data == nullptr) return;
+    if(fbo.stencil.data == nullptr) return;
 
-    // TODO this can probably be optimized
-    for(std::uint32_t y = 0; y < fbo->height; y++) {
-        for(std::uint32_t x = 0; x < fbo->width; x++) {
-            write_frag_stencil(fbo, glm::uvec2(x, y), cm.value);
-        }
+    // write to first pixel
+    uint8_t *first = reinterpret_cast<uint8_t*>(fbo.stencil.data);
+    *first = cm.value;
+
+    const uint8_t *copy_end = reinterpret_cast<uint8_t*>(fbo.stencil.data) + fbo.height * fbo.width * fbo.stencil.bytesPerPixel;
+    uint8_t *insert_start = reinterpret_cast<uint8_t*>(fbo.stencil.data) + fbo.stencil.bytesPerPixel;
+    size_t copy_bytes = fbo.stencil.bytesPerPixel;
+
+    // exponentialy copy the pixels
+    while(insert_start + copy_bytes < copy_end) {
+        std::memcpy(insert_start, fbo.stencil.data, copy_bytes);
+        insert_start += copy_bytes;
+        copy_bytes <<= 1;
     }
+
+    // copy the remainder
+    std::memcpy(insert_start, fbo.stencil.data, copy_end - insert_start);
 }
 
 void user(GPUMemory& mem, UserCommand& cm) {
@@ -289,26 +348,14 @@ void clip_point(Primitive &tri, int clip_idx, int to_idx) {
         Attrib& to_attrib = to_vert.attributes[attrib_idx];
         switch(tri.type[attrib_idx]) {
             case AttribType::FLOAT:
-                clipped_attrib.v1 = to_attrib.v1 + t * (clipped_attrib.v1 - to_attrib.v1);
-                break;
             case AttribType::VEC2:
-                clipped_attrib.v2 = to_attrib.v2 + t * (clipped_attrib.v2 - to_attrib.v2);
-                break;
             case AttribType::VEC3:
-                clipped_attrib.v3 = to_attrib.v3 + t * (clipped_attrib.v3 - to_attrib.v3);
-                break;
             case AttribType::VEC4:
                 clipped_attrib.v4 = to_attrib.v4 + t * (clipped_attrib.v4 - to_attrib.v4);
                 break;
             case AttribType::UINT:
-                clipped_attrib.u1 = glm::round(to_attrib.u1 + t * (clipped_attrib.u1 - to_attrib.u1));
-                break;
             case AttribType::UVEC2:
-                clipped_attrib.u2 = glm::round(glm::vec2(to_attrib.u2) + t * glm::vec2(clipped_attrib.u2 - to_attrib.u2));
-                break;
             case AttribType::UVEC3:
-                clipped_attrib.u3 = glm::round(glm::vec3(to_attrib.u3) + t * glm::vec3(clipped_attrib.u3 - to_attrib.u3));
-                break;
             case AttribType::UVEC4:
                 clipped_attrib.u4 = glm::round(glm::vec4(to_attrib.u4) + t * glm::vec4(clipped_attrib.u4 - to_attrib.u4));
                 break;
@@ -371,15 +418,15 @@ void perspective_division(GPUMemory& mem, Primitive& t) {
     }
 }
 
-void viewport_transform(GPUMemory& mem, Framebuffer *framebuffer, Primitive& t) {
-    std::uint32_t width = framebuffer->width;
-    std::uint32_t height = framebuffer->height;
+void viewport_transform(GPUMemory& mem, Framebuffer& framebuffer, Primitive& t) {
+    std::uint32_t width = framebuffer.width;
+    std::uint32_t height = framebuffer.height;
 
     // per vertex in triangle (ndc to screen-space)
     for(unsigned i = 0; i < 3; i++) {
         glm::vec4 pos = t.verts[i].gl_Position;
-        pos.x = (pos.x * 0.5 + 0.5) * width;
-        pos.y = (pos.y * 0.5 + 0.5) * height;
+        pos.x = (pos.x * 0.5f + 0.5f) * width;
+        pos.y = (pos.y * 0.5f + 0.5f) * height;
         t.verts[i].gl_Position = pos;
     }
 }
@@ -392,15 +439,15 @@ bool should_cull(GPUMemory const& mem, Primitive const& t, bool& front_facing) {
         t.verts[2].gl_Position
     };
 
-    mat[0][2] = 1.0;
-    mat[1][2] = 1.0;
-    mat[2][2] = 1.0;
+    mat[0][2] = 1.0f;
+    mat[1][2] = 1.0f;
+    mat[2][2] = 1.0f;
 
     float det = glm::determinant(mat);
-    bool is_clockwise = glm::determinant(mat) < 0;
+    bool is_clockwise = det < 0.0f;
 
     // always cull lines
-    float eps = 1e-9;
+    float eps = 1e-9f;
     if(det < eps && det > -eps) {
         return true;
     }
@@ -429,31 +476,31 @@ struct Bounds {
 struct Barycentrics {
     // hl3 confirmed
     float lambda[3];
+    double inv_denom_cache = 0.0;
 };
 
 // also computes barycentrics
-bool is_inside_triangle(glm::vec2 pos, Primitive const& t, Barycentrics& bary) {
-
+inline bool is_inside_triangle(glm::vec2 pos, Primitive const& t, Barycentrics& bary) {
+    ZoneScoped;
     glm::dvec2 a = t.verts[0].gl_Position;
     glm::dvec2 b = t.verts[1].gl_Position;
     glm::dvec2 c = t.verts[2].gl_Position;
     glm::dvec2 p = pos;
 
     glm::dvec2 v0 = b - a, v1 = c - a, v2 = p - a;
-    double denom = v0.x * v1.y - v1.x * v0.y;
-    double inv_denom = 1.0f / denom;
+    if(bary.inv_denom_cache == 0) {
+        bary.inv_denom_cache = 1.0f / (v0.x * v1.y - v1.x * v0.y);
+    }
 
-    double u = (v2.x * v1.y - v1.x * v2.y) * inv_denom;
-    double v = (v0.x * v2.y - v2.x * v0.y) * inv_denom;
-    bary.lambda[1] = u;
-    bary.lambda[2] = v;
+    bary.lambda[1] = (v2.x * v1.y - v1.x * v2.y) * bary.inv_denom_cache;
+    bary.lambda[2] = (v0.x * v2.y - v2.x * v0.y) * bary.inv_denom_cache;
+    //bary.lambda[0] = ((v0.x - v2.x) * (v1.y - v2.y) - (v1.x - v2.x) * (v0.y - v2.y)) * inv_denom;
     // this should really be 1 - (u + v), but then the some tests wouldn't pass
-    bary.lambda[0] = 1.0f - (u + v + 1e-10);
+    bary.lambda[0] = 1.0 - (bary.lambda[1] + bary.lambda[2] + 1e-10);
 
-    float threshold = 0;
-    bool outside = bary.lambda[0] < threshold || bary.lambda[1] < threshold || bary.lambda[2] < threshold;
+    bool inside = bary.lambda[1] >= 0.0f & bary.lambda[2] >= 0.0f & bary.lambda[0] >= 0.0f;
 
-    return !outside;
+    return inside;
 }
 
 void stencil_operation(GPUMemory const& mem, std::uint8_t *frag_stencil, StencilOp op) {
@@ -486,14 +533,11 @@ void stencil_operation(GPUMemory const& mem, std::uint8_t *frag_stencil, Stencil
     }
 }
 
-bool stencil_test_pass(GPUMemory const& mem, Framebuffer *framebuffer, const glm::uvec2 pos, const bool front_facing) {
-    if(!mem.stencilSettings.enabled || framebuffer->stencil.data == nullptr) return true;
+bool stencil_test_pass(GPUMemory const& mem, Framebuffer& framebuffer, const glm::uvec2 pos, const bool front_facing) {
+    if(!mem.stencilSettings.enabled || framebuffer.stencil.data == nullptr) return true;
 
     std::uint8_t *stencil;
-    if(framebuffer->yReversed)
-        stencil = reinterpret_cast<std::uint8_t*>(getPixel(framebuffer->stencil, pos.x, framebuffer->height - 1 - pos.y));
-    else 
-        stencil = reinterpret_cast<std::uint8_t*>(getPixel(framebuffer->stencil, pos.x, pos.y));
+    stencil = reinterpret_cast<std::uint8_t*>(getPixel(framebuffer.stencil, pos.x, framebuffer.yReversed ? framebuffer.height - 1 - pos.y : pos.y));
 
     bool test_result;
     auto ref = mem.stencilSettings.refValue;
@@ -528,48 +572,36 @@ bool stencil_test_pass(GPUMemory const& mem, Framebuffer *framebuffer, const glm
 
     if(!mem.blockWrites.stencil && !test_result) { 
         // sfail
-        if(front_facing) {
-            stencil_operation(mem, stencil, mem.stencilSettings.frontOps.sfail);
-        }
-        else {
-            stencil_operation(mem, stencil, mem.stencilSettings.backOps.sfail);
-        }
+        stencil_operation(mem, stencil, 
+                front_facing ?  mem.stencilSettings.frontOps.sfail :
+                                mem.stencilSettings.backOps.sfail);
     }
     return test_result;
 }
 
-bool depth_test_pass(GPUMemory& mem, Framebuffer *framebuffer, InFragment const& in, const glm::uvec2 pos, const bool front_facing) {
-    if(framebuffer->depth.data == nullptr) return true;
+bool depth_test_pass(GPUMemory& mem, Framebuffer& framebuffer, InFragment const& in, const glm::uvec2 pos, const bool front_facing) {
+    if(framebuffer.depth.data == nullptr) return true;
 
     float *depth;
-    if(framebuffer->yReversed)
-        depth = reinterpret_cast<float*>(getPixel(framebuffer->depth, pos.x, framebuffer->height - 1 - pos.y));
-    else 
-        depth = reinterpret_cast<float*>(getPixel(framebuffer->depth, pos.x, pos.y));
+    depth = reinterpret_cast<float*>(getPixel(framebuffer.depth, pos.x, framebuffer.yReversed ? framebuffer.height - 1 - pos.y : pos.y));
     bool result = *depth > in.gl_FragCoord.z;
     if(result) return true;
 
     // try dpfail write to stencil
-    if(!mem.stencilSettings.enabled || mem.blockWrites.stencil || framebuffer->stencil.data == nullptr) return false;
+    if(!mem.stencilSettings.enabled || mem.blockWrites.stencil || framebuffer.stencil.data == nullptr) return false;
 
     // write to stencil
     std::uint8_t *stencil;
-    if(framebuffer->yReversed)
-        stencil = reinterpret_cast<std::uint8_t*>(getPixel(framebuffer->stencil, pos.x, framebuffer->height - 1 - pos.y));
-    else 
-        stencil = reinterpret_cast<std::uint8_t*>(getPixel(framebuffer->stencil, pos.x, pos.y));
+    stencil = reinterpret_cast<std::uint8_t*>(getPixel(framebuffer.stencil, pos.x, framebuffer.yReversed ? framebuffer.height - 1 - pos.y : pos.y));
 
-    if(front_facing) {
-        stencil_operation(mem, stencil, mem.stencilSettings.frontOps.dpfail);
-    }
-    else {
-        stencil_operation(mem, stencil, mem.stencilSettings.backOps.dpfail);
-    }
+    stencil_operation(mem, stencil, 
+            front_facing ?  mem.stencilSettings.frontOps.dpfail :
+                            mem.stencilSettings.backOps.dpfail);
 
     return false;
 }
 
-void get_blended_frag_color(GPUMemory const& mem, Framebuffer *framebuffer, const glm::uvec2 pos, glm::vec4& src_color) {
+void get_blended_frag_color(GPUMemory const& mem, Framebuffer& framebuffer, const glm::uvec2 pos, glm::vec4& src_color) {
     const BlendingSettings settings = mem.blendingSettings;
     if(!settings.enabled) return;
 
@@ -663,6 +695,7 @@ void get_blended_frag_color(GPUMemory const& mem, Framebuffer *framebuffer, cons
 }
 
 void create_fragment(GPUMemory& mem, glm::vec2& pos, Barycentrics& bary, Primitive const& t, InFragment& in) {
+    ZoneScoped;
     in.gl_FragCoord.x = pos.x;
     in.gl_FragCoord.y = pos.y;
 
@@ -709,66 +742,9 @@ void create_fragment(GPUMemory& mem, glm::vec2& pos, Barycentrics& bary, Primiti
                 break;
         }
     }
-    //for(std::uint32_t attrib_idx = 0; attrib_idx < maxAttribs; attrib_idx++) {
-    //    switch(t.type[attrib_idx]) {
-    //        case AttribType::FLOAT:
-    //            in.attributes[attrib_idx].v1 = 
-    //                bary.lambda[0] * t.verts[0].attributes[attrib_idx].v1 +
-    //                bary.lambda[1] * t.verts[1].attributes[attrib_idx].v1 +
-    //                bary.lambda[2] * t.verts[2].attributes[attrib_idx].v1;
-    //            break;
-    //        case AttribType::VEC2:
-    //            in.attributes[attrib_idx].v2 = 
-    //                bary.lambda[0] * t.verts[0].attributes[attrib_idx].v2 +
-    //                bary.lambda[1] * t.verts[1].attributes[attrib_idx].v2 +
-    //                bary.lambda[2] * t.verts[2].attributes[attrib_idx].v2;
-    //            break;
-    //        case AttribType::VEC3:
-    //            in.attributes[attrib_idx].v3 = 
-    //                bary.lambda[0] * t.verts[0].attributes[attrib_idx].v3 +
-    //                bary.lambda[1] * t.verts[1].attributes[attrib_idx].v3 +
-    //                bary.lambda[2] * t.verts[2].attributes[attrib_idx].v3;
-    //            break;
-    //        case AttribType::VEC4:
-    //            in.attributes[attrib_idx].v4 = 
-    //                bary.lambda[0] * t.verts[0].attributes[attrib_idx].v4 +
-    //                bary.lambda[1] * t.verts[1].attributes[attrib_idx].v4 +
-    //                bary.lambda[2] * t.verts[2].attributes[attrib_idx].v4;
-    //            break;
-    //        case AttribType::UINT:
-    //            in.attributes[attrib_idx].u1 = std::round( 
-    //                bary.lambda[0] * t.verts[0].attributes[attrib_idx].u1 +
-    //                bary.lambda[1] * t.verts[1].attributes[attrib_idx].u1 +
-    //                bary.lambda[2] * t.verts[2].attributes[attrib_idx].u1);
-    //            break;
-    //        case AttribType::UVEC2:
-    //            in.attributes[attrib_idx].u2 = 
-    //                glm::round(
-    //                bary.lambda[0] * static_cast<glm::vec2>(t.verts[0].attributes[attrib_idx].u2) +
-    //                bary.lambda[1] * static_cast<glm::vec2>(t.verts[1].attributes[attrib_idx].u2) +
-    //                bary.lambda[2] * static_cast<glm::vec2>(t.verts[2].attributes[attrib_idx].u2));
-    //            break;
-    //        case AttribType::UVEC3:
-    //            in.attributes[attrib_idx].u3 = 
-    //                glm::round(
-    //                bary.lambda[0] * static_cast<glm::vec3>(t.verts[0].attributes[attrib_idx].u3) +
-    //                bary.lambda[1] * static_cast<glm::vec3>(t.verts[1].attributes[attrib_idx].u3) +
-    //                bary.lambda[2] * static_cast<glm::vec3>(t.verts[2].attributes[attrib_idx].u3));
-    //            break;
-    //        case AttribType::UVEC4:
-    //            in.attributes[attrib_idx].u4 = 
-    //                glm::round(
-    //                bary.lambda[0] * static_cast<glm::vec4>(t.verts[0].attributes[attrib_idx].u4) +
-    //                bary.lambda[1] * static_cast<glm::vec4>(t.verts[1].attributes[attrib_idx].u4) +
-    //                bary.lambda[2] * static_cast<glm::vec4>(t.verts[2].attributes[attrib_idx].u4));
-    //            break;
-    //        case AttribType::EMPTY:
-    //            break;
-    //    }
-    //}
 }
 
-void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, const bool front_facing) {
+void rasterize(GPUMemory& mem, Framebuffer& framebuffer, Primitive const& t, const bool front_facing) {
     ZoneScoped;
     Bounds bounds;
 
@@ -781,12 +757,12 @@ void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, con
         bounds.down = glm::min(bounds.down, pos.y);
     }
     // clip bounds to framebuffer
-    std::uint32_t width = framebuffer->width;
-    std::uint32_t height = framebuffer->height;
+    std::uint32_t width = framebuffer.width;
+    std::uint32_t height = framebuffer.height;
     bounds.right = glm::min<float>(bounds.right + 0.5f, width - 1);
     bounds.up = glm::min<float>(bounds.up + 0.5f, height - 1);
-    bounds.left = glm::max<float>(bounds.left - 0.5f, 0);
-    bounds.down = glm::max<float>(bounds.down - 0.5f, 0);
+    bounds.left = glm::max<float>(bounds.left - 0.5f, 0.0f);
+    bounds.down = glm::max<float>(bounds.down - 0.5f, 0.0f);
 
     Program *prog = mem.programs + mem.activatedProgram;
     InFragment in;
@@ -799,7 +775,6 @@ void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, con
     interface.uniforms = mem.uniforms;
 
 
-    // TODO flipped framebuffer
     // per fragment in bounds
     for(std::uint32_t y = bounds.down; y <= bounds.up; y++) {
         bool line_drawn_to = false;
@@ -815,6 +790,8 @@ void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, con
             };
 
             line_drawn_to = true;
+            out.discard = false;
+            out.gl_FragColor = glm::vec4();
             // draw fragment
             
             create_fragment(mem, pos, bary, t, in);
@@ -826,33 +803,25 @@ void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, con
             if(!depth_test_pass(mem, framebuffer, in, data_pos, front_facing)) continue;
 
             // fragment shader
-            out.discard = false;
-            out.gl_FragColor = glm::vec4();
             if(prog->fragmentShader) {
                 prog->fragmentShader(out, in, interface);
+                if(out.discard) continue;
             }
-            if(out.discard) continue;
 
             // write dppass stencil
-            if(framebuffer->stencil.data != nullptr && !mem.blockWrites.stencil && mem.stencilSettings.enabled) {
+            if(framebuffer.stencil.data != nullptr && !mem.blockWrites.stencil && mem.stencilSettings.enabled) {
                 std::uint8_t *stencil;
-                if(framebuffer->yReversed)
-                    stencil = reinterpret_cast<std::uint8_t*>(getPixel(framebuffer->stencil, data_pos.x, framebuffer->height - 1 - data_pos.y));
-                else 
-                    stencil = reinterpret_cast<std::uint8_t*>(getPixel(framebuffer->stencil, data_pos.x, data_pos.y));
-                if(front_facing) {
-                    stencil_operation(mem, stencil, mem.stencilSettings.frontOps.dppass);
-                }
-                else {
-                    stencil_operation(mem, stencil, mem.stencilSettings.backOps.dppass);
-                }
+                stencil = reinterpret_cast<std::uint8_t*>(getPixel(framebuffer.stencil, pos.x, framebuffer.yReversed ? framebuffer.height - 1 - pos.y : pos.y));
+                stencil_operation(mem, stencil, 
+                        front_facing ?  mem.stencilSettings.frontOps.dppass :
+                                        mem.stencilSettings.backOps.dppass);
             }
             // write depth
-            if(framebuffer->depth.data != nullptr && !mem.blockWrites.depth) {
+            if(framebuffer.depth.data != nullptr && !mem.blockWrites.depth) {
                 write_frag_depth(framebuffer, data_pos, in.gl_FragCoord.z);
             }
             // write color
-            if(framebuffer->color.data != nullptr && !mem.blockWrites.color) {
+            if(framebuffer.color.data != nullptr && !mem.blockWrites.color) {
                 get_blended_frag_color(mem, framebuffer, data_pos, out.gl_FragColor);
                 write_frag_color(framebuffer, data_pos, out.gl_FragColor);
             }
@@ -861,9 +830,8 @@ void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, con
 }
 
 void draw(GPUMemory& mem, DrawCommand& cm) {
-
-    //ZoneScoped;
-    Framebuffer *framebuffer = mem.framebuffers + mem.activatedFramebuffer;
+    ZoneScoped;
+    Framebuffer& framebuffer = mem.framebuffers[mem.activatedFramebuffer];
     Primitive t;
     Primitive u;
     bool front_facing;
@@ -971,7 +939,7 @@ void student_GPU_run(GPUMemory& mem, CommandBuffer const& cb) {
     /// V základu jde o to, že cb obsahuje příkazy, které se musí provést nad pamětí mem.
     /// Správně fungující grafická karta dobře interpretuje příkazy v cb a správně změní obsah paměti mem.
     
-    //ZoneScoped;
+    ZoneScoped;
 
     mem.gl_DrawID = 0;
 

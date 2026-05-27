@@ -7,9 +7,10 @@
 #include <studentSolution/prepareModel.hpp>
 #include <studentSolution/gpu.hpp>
 #include <solutionInterface/uniformLocations.hpp>
-#include <iostream>
-void process_node(GPUMemory& mem, CommandBuffer& cb, Node const& node, Model const& model, glm::mat4 const& parent_model, size_t& draw_counter) {
+#include "Tracy.hpp"
 
+void process_node(GPUMemory& mem, CommandBuffer& cb, Node const& node, Model const& model, glm::mat4 const& parent_model, size_t& draw_counter) {
+    ZoneScoped;
     glm::mat4 model_matrix = parent_model * node.modelMatrix;
 
     if(node.mesh >= 0) {
@@ -56,6 +57,7 @@ void process_node(GPUMemory& mem, CommandBuffer& cb, Node const& node, Model con
  */
 //! [drawModel]
 void student_prepareModel(GPUMemory& mem, CommandBuffer& commandBuffer, Model const& model){
+    ZoneScoped;
     // Set buffers
     for(size_t buffer_idx = 0; buffer_idx < model.nofBuffers; buffer_idx++) {
         mem.buffers[buffer_idx] = model.buffers[buffer_idx];
@@ -87,6 +89,7 @@ void student_prepareModel(GPUMemory& mem, CommandBuffer& commandBuffer, Model co
  */
 //! [drawModel_vs]
 void student_drawModel_vertexShader(OutVertex& outVertex, InVertex const& inVertex, ShaderInterface const& si){
+    ZoneScoped;
     const glm::mat4& model = si.uniforms[getUniformLocation(si.gl_DrawID, MODEL_MATRIX)].m4;
     const glm::mat4& inverse_transpose = si.uniforms[getUniformLocation(si.gl_DrawID, INVERSE_TRANSPOSE_MODEL_MATRIX)].m4;
     const glm::mat4& projection = si.uniforms[getUniformLocation(si.gl_DrawID, PROJECTION_VIEW_MATRIX)].m4;
@@ -123,7 +126,7 @@ void student_drawModel_vertexShader(OutVertex& outVertex, InVertex const& inVert
  */
 //! [drawModel_fs]
 void student_drawModel_fragmentShader(OutFragment& outFragment, InFragment const& inFragment, ShaderInterface const& si){
-    
+    ZoneScoped;
     std::int32_t texture_id = si.uniforms[getUniformLocation(si.gl_DrawID, TEXTURE_ID)].i1;
     std::int32_t shadowmap_id = si.uniforms[getUniformLocation(si.gl_DrawID, SHADOWMAP_ID)].i1;
 
@@ -157,7 +160,7 @@ void student_drawModel_fragmentShader(OutFragment& outFragment, InFragment const
         material_color = si.uniforms[getUniformLocation(si.gl_DrawID, DIFFUSE_COLOR)].v4;
     }
 
-    outFragment.discard = material_color.a < 0.5;
+    outFragment.discard = material_color.a < 0.5f;
     // discard fragment if it is too much transparent
     if(outFragment.discard) return;
 
@@ -174,21 +177,15 @@ void student_drawModel_fragmentShader(OutFragment& outFragment, InFragment const
     else {
         // shadowmapping enabled
         shadow_position /= shadow_position.w;
-        if(shadow_position.x < 0 || shadow_position.y < 0 ||
-           shadow_position.x > 1 || shadow_position.y > 1) {
+        if(shadow_position.x < 0.0f || shadow_position.y < 0.0f ||
+           shadow_position.x > 1.0f || shadow_position.y > 1.0f) {
             // not in shadowmap, render normaly
             outFragment.gl_FragColor = glm::vec4(ambient_light + diffuse_light, material_color.a); 
         }
         else {
             float shadow_depth = student_read_texture(si.textures[shadowmap_id], glm::vec2(shadow_position)).r;
-            if(shadow_position.z > shadow_depth) {
-                // in a shadow
-                outFragment.gl_FragColor = glm::vec4(ambient_light, material_color.a); 
-            }
-            else {
-                // not in a shadow
-                outFragment.gl_FragColor = glm::vec4(ambient_light + diffuse_light, material_color.a); 
-            } 
+            outFragment.gl_FragColor = glm::vec4(ambient_light + (
+                        shadow_position.z > shadow_depth ? glm::vec3() : diffuse_light), material_color.a); 
         }
     }
 }
