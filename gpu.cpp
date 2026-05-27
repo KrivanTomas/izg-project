@@ -8,8 +8,7 @@
 
 #include <studentSolution/gpu.hpp>
 
-// TODO not this
-#include <iostream>
+#include "Tracy.hpp"
 
 void bind_framebuffer(GPUMemory& mem, BindFramebufferCommand& cm) {
     mem.activatedFramebuffer = cm.id;
@@ -63,39 +62,13 @@ void write_frag_color(Framebuffer* fbo, const glm::uvec2 pos, const glm::vec4 co
         glm::vec4 clamped_color = glm::clamp(color, 0.0f, 1.0f);
         std::uint8_t *pixel = reinterpret_cast<std::uint8_t*>(pixel_start);
         for(uint32_t i = 0; i < fbo->color.channels; i++) {
-            switch(fbo->color.channelTypes[i]) {
-                case Image::Channel::RED:
-                    pixel[i] = 255 * clamped_color.r;
-                    break;
-                case Image::Channel::GREEN:
-                    pixel[i] = 255 * clamped_color.g;
-                    break;
-                case Image::Channel::BLUE:
-                    pixel[i] = 255 * clamped_color.b;
-                    break;
-                case Image::Channel::ALPHA:
-                    pixel[i] = 255 * clamped_color.a;
-                    break;
-            }
+            pixel[i] = 255 * clamped_color[fbo->color.channelTypes[i]];
         }
     }
     else if(fbo->color.format == Image::F32) {
         float *pixel = reinterpret_cast<float*>(pixel_start);
         for(uint32_t i = 0; i < fbo->color.channels; i++) {
-            switch(fbo->color.channelTypes[i]) {
-                case Image::Channel::RED:
-                    pixel[i] = color.r;
-                    break;
-                case Image::Channel::GREEN:
-                    pixel[i] = color.g;
-                    break;
-                case Image::Channel::BLUE:
-                    pixel[i] = color.b;
-                    break;
-                case Image::Channel::ALPHA:
-                    pixel[i] = color.a;
-                    break;
-            }
+            pixel[i] = color[fbo->color.channelTypes[i]];
         }
     }
 }
@@ -108,43 +81,18 @@ glm::vec4 read_frag_color(Framebuffer* fbo, const glm::uvec2 pos) {
     else
         pixel_start = getPixel(fbo->color, pos.x, pos.y);
 
+    constexpr float max_inverted = 1/255.0f;
 
     if(fbo->color.format == Image::U8) {
         std::uint8_t *pixel = reinterpret_cast<std::uint8_t*>(pixel_start);
         for(uint32_t i = 0; i < fbo->color.channels; i++) {
-            switch(fbo->color.channelTypes[i]) {
-                case Image::Channel::RED:
-                    color.r = pixel[i] / 255.0f;
-                    break;
-                case Image::Channel::GREEN:
-                    color.g = pixel[i] / 255.0f;
-                    break;
-                case Image::Channel::BLUE:
-                    color.b = pixel[i] / 255.0f;
-                    break;
-                case Image::Channel::ALPHA:
-                    color.a = pixel[i] / 255.0f;
-                    break;
-            }
+            color[fbo->color.channelTypes[i]] = pixel[i] * max_inverted;
         }
     }
     else if(fbo->color.format == Image::F32) {
         float *pixel = reinterpret_cast<float*>(pixel_start);
         for(uint32_t i = 0; i < fbo->color.channels; i++) {
-            switch(fbo->color.channelTypes[i]) {
-                case Image::Channel::RED:
-                    color.r = pixel[i];
-                    break;
-                case Image::Channel::GREEN:
-                    color.g = pixel[i];
-                    break;
-                case Image::Channel::BLUE:
-                    color.b = pixel[i];
-                    break;
-                case Image::Channel::ALPHA:
-                    color.a = pixel[i];
-                    break;
-            }
+            color[fbo->color.channelTypes[i]] = pixel[i];
         }
     }
     return color;
@@ -380,7 +328,8 @@ int clipping(Primitive& t, Primitive& u) {
     int clipped;
     for(int i = 0; i < 3; i++) {
         glm::vec4 point = t.verts[i].gl_Position;
-        if(!(-point.w <= point.z && point.z <= point.w)) {
+        // clip triangles with near-plane
+        if(!(-point.w <= point.z)) {
             clipped_count++;
             clipped = i;
         }
@@ -392,7 +341,7 @@ int clipping(Primitive& t, Primitive& u) {
 
     if(clipped_count == 3) return 0;
     if(clipped_count == 0) return 1;
-    
+
     if(clipped_count == 2) {
         for(int i = 0; i < 3; i++) {
             if(i == not_clipped) continue;
@@ -485,39 +434,26 @@ struct Barycentrics {
 // also computes barycentrics
 bool is_inside_triangle(glm::vec2 pos, Primitive const& t, Barycentrics& bary) {
 
-    glm::vec2 a = t.verts[0].gl_Position;
-    glm::vec2 b = t.verts[1].gl_Position;
-    glm::vec2 c = t.verts[2].gl_Position;
-    glm::vec2 p = pos;
+    glm::dvec2 a = t.verts[0].gl_Position;
+    glm::dvec2 b = t.verts[1].gl_Position;
+    glm::dvec2 c = t.verts[2].gl_Position;
+    glm::dvec2 p = pos;
 
+    glm::dvec2 v0 = b - a, v1 = c - a, v2 = p - a;
+    double denom = v0.x * v1.y - v1.x * v0.y;
+    double inv_denom = 1.0f / denom;
 
-    // https://gamedev.stackexchange.com/a/63203
-    glm::vec2 v0 = b - a, v1 = c - a, v2 = p - a;
-    float den = v0.x * v1.y - v1.x * v0.y;
-    float inv_den = 1.0f / den;
+    double u = (v2.x * v1.y - v1.x * v2.y) * inv_denom;
+    double v = (v0.x * v2.y - v2.x * v0.y) * inv_denom;
+    bary.lambda[1] = u;
+    bary.lambda[2] = v;
+    // this should really be 1 - (u + v), but then the some tests wouldn't pass
+    bary.lambda[0] = 1.0f - (u + v + 1e-10);
 
-    //float d00 = glm::dot(v0, v0);
-    //float d01 = glm::dot(v0, v1);
-    //float d11 = glm::dot(v1, v1);
-    //float d20 = glm::dot(v2, v0);
-    //float d21 = glm::dot(v2, v1);
-    //
-    //float denom = d00 * d11 - d01 * d01;
-    //float inv_denom = 1.0f / denom;
-    //bary.lambda[1] = (d11 * d20 - d01 * d21) * inv_denom;
-    //bary.lambda[2] = (d00 * d21 - d01 * d20) * inv_denom;
-    //bary.lambda[0] = 1.0f - bary.lambda[1] - bary.lambda[2];
-    
-    bary.lambda[1] = (v2.x * v1.y - v1.x * v2.y) * inv_den;
-    bary.lambda[2] = (v0.x * v2.y - v2.x * v0.y) * inv_den;
-    bary.lambda[0] = 1.0f - bary.lambda[1] - bary.lambda[2];
+    float threshold = 0;
+    bool outside = bary.lambda[0] < threshold || bary.lambda[1] < threshold || bary.lambda[2] < threshold;
 
-    //// this should really be 0, but then the depth_test test wouldn't pass
-    float threshold = 6e-8;
-    //float threshold = 0;
-    bool any_negative = bary.lambda[0] < threshold || bary.lambda[1] < threshold || bary.lambda[2] < threshold;
-
-    return !any_negative;
+    return !outside;
 }
 
 void stencil_operation(GPUMemory const& mem, std::uint8_t *frag_stencil, StencilOp op) {
@@ -726,7 +662,7 @@ void get_blended_frag_color(GPUMemory const& mem, Framebuffer *framebuffer, cons
     }
 }
 
-void create_fragment(GPUMemory& mem, glm::vec2 pos, Barycentrics& bary, Primitive const& t, InFragment& in) {
+void create_fragment(GPUMemory& mem, glm::vec2& pos, Barycentrics& bary, Primitive const& t, InFragment& in) {
     in.gl_FragCoord.x = pos.x;
     in.gl_FragCoord.y = pos.y;
 
@@ -740,10 +676,10 @@ void create_fragment(GPUMemory& mem, glm::vec2 pos, Barycentrics& bary, Primitiv
     float s0 = bary.lambda[0] / t.verts[0].gl_Position.w;
     float s1 = bary.lambda[1] / t.verts[1].gl_Position.w;
     float s2 = bary.lambda[2] / t.verts[2].gl_Position.w;
-    float s = s0 + s1 + s2;
-    bary.lambda[0] = s0 / s;
-    bary.lambda[1] = s1 / s;
-    bary.lambda[2] = s2 / s;
+    float s_inv = 1.0f / (s0 + s1 + s2);
+    bary.lambda[0] = s0 * s_inv;
+    bary.lambda[1] = s1 * s_inv;
+    bary.lambda[2] = s2 * s_inv;
 
     
     float a;
@@ -751,23 +687,8 @@ void create_fragment(GPUMemory& mem, glm::vec2 pos, Barycentrics& bary, Primitiv
     for(std::uint32_t attrib_idx = 0; attrib_idx < maxAttribs; attrib_idx++) {
         switch(t.type[attrib_idx]) {
             case AttribType::FLOAT:
-                in.attributes[attrib_idx].v1 = 
-                    bary.lambda[0] * t.verts[0].attributes[attrib_idx].v1 +
-                    bary.lambda[1] * t.verts[1].attributes[attrib_idx].v1 +
-                    bary.lambda[2] * t.verts[2].attributes[attrib_idx].v1;
-                break;
             case AttribType::VEC2:
-                in.attributes[attrib_idx].v2 = 
-                    bary.lambda[0] * t.verts[0].attributes[attrib_idx].v2 +
-                    bary.lambda[1] * t.verts[1].attributes[attrib_idx].v2 +
-                    bary.lambda[2] * t.verts[2].attributes[attrib_idx].v2;
-                break;
             case AttribType::VEC3:
-                in.attributes[attrib_idx].v3 = 
-                    bary.lambda[0] * t.verts[0].attributes[attrib_idx].v3 +
-                    bary.lambda[1] * t.verts[1].attributes[attrib_idx].v3 +
-                    bary.lambda[2] * t.verts[2].attributes[attrib_idx].v3;
-                break;
             case AttribType::VEC4:
                 in.attributes[attrib_idx].v4 = 
                     bary.lambda[0] * t.verts[0].attributes[attrib_idx].v4 +
@@ -775,25 +696,8 @@ void create_fragment(GPUMemory& mem, glm::vec2 pos, Barycentrics& bary, Primitiv
                     bary.lambda[2] * t.verts[2].attributes[attrib_idx].v4;
                 break;
             case AttribType::UINT:
-                in.attributes[attrib_idx].u1 = std::round( 
-                    bary.lambda[0] * t.verts[0].attributes[attrib_idx].u1 +
-                    bary.lambda[1] * t.verts[1].attributes[attrib_idx].u1 +
-                    bary.lambda[2] * t.verts[2].attributes[attrib_idx].u1);
-                break;
             case AttribType::UVEC2:
-                in.attributes[attrib_idx].u2 = 
-                    glm::round(
-                    bary.lambda[0] * static_cast<glm::vec2>(t.verts[0].attributes[attrib_idx].u2) +
-                    bary.lambda[1] * static_cast<glm::vec2>(t.verts[1].attributes[attrib_idx].u2) +
-                    bary.lambda[2] * static_cast<glm::vec2>(t.verts[2].attributes[attrib_idx].u2));
-                break;
             case AttribType::UVEC3:
-                in.attributes[attrib_idx].u3 = 
-                    glm::round(
-                    bary.lambda[0] * static_cast<glm::vec3>(t.verts[0].attributes[attrib_idx].u3) +
-                    bary.lambda[1] * static_cast<glm::vec3>(t.verts[1].attributes[attrib_idx].u3) +
-                    bary.lambda[2] * static_cast<glm::vec3>(t.verts[2].attributes[attrib_idx].u3));
-                break;
             case AttribType::UVEC4:
                 in.attributes[attrib_idx].u4 = 
                     glm::round(
@@ -805,9 +709,67 @@ void create_fragment(GPUMemory& mem, glm::vec2 pos, Barycentrics& bary, Primitiv
                 break;
         }
     }
+    //for(std::uint32_t attrib_idx = 0; attrib_idx < maxAttribs; attrib_idx++) {
+    //    switch(t.type[attrib_idx]) {
+    //        case AttribType::FLOAT:
+    //            in.attributes[attrib_idx].v1 = 
+    //                bary.lambda[0] * t.verts[0].attributes[attrib_idx].v1 +
+    //                bary.lambda[1] * t.verts[1].attributes[attrib_idx].v1 +
+    //                bary.lambda[2] * t.verts[2].attributes[attrib_idx].v1;
+    //            break;
+    //        case AttribType::VEC2:
+    //            in.attributes[attrib_idx].v2 = 
+    //                bary.lambda[0] * t.verts[0].attributes[attrib_idx].v2 +
+    //                bary.lambda[1] * t.verts[1].attributes[attrib_idx].v2 +
+    //                bary.lambda[2] * t.verts[2].attributes[attrib_idx].v2;
+    //            break;
+    //        case AttribType::VEC3:
+    //            in.attributes[attrib_idx].v3 = 
+    //                bary.lambda[0] * t.verts[0].attributes[attrib_idx].v3 +
+    //                bary.lambda[1] * t.verts[1].attributes[attrib_idx].v3 +
+    //                bary.lambda[2] * t.verts[2].attributes[attrib_idx].v3;
+    //            break;
+    //        case AttribType::VEC4:
+    //            in.attributes[attrib_idx].v4 = 
+    //                bary.lambda[0] * t.verts[0].attributes[attrib_idx].v4 +
+    //                bary.lambda[1] * t.verts[1].attributes[attrib_idx].v4 +
+    //                bary.lambda[2] * t.verts[2].attributes[attrib_idx].v4;
+    //            break;
+    //        case AttribType::UINT:
+    //            in.attributes[attrib_idx].u1 = std::round( 
+    //                bary.lambda[0] * t.verts[0].attributes[attrib_idx].u1 +
+    //                bary.lambda[1] * t.verts[1].attributes[attrib_idx].u1 +
+    //                bary.lambda[2] * t.verts[2].attributes[attrib_idx].u1);
+    //            break;
+    //        case AttribType::UVEC2:
+    //            in.attributes[attrib_idx].u2 = 
+    //                glm::round(
+    //                bary.lambda[0] * static_cast<glm::vec2>(t.verts[0].attributes[attrib_idx].u2) +
+    //                bary.lambda[1] * static_cast<glm::vec2>(t.verts[1].attributes[attrib_idx].u2) +
+    //                bary.lambda[2] * static_cast<glm::vec2>(t.verts[2].attributes[attrib_idx].u2));
+    //            break;
+    //        case AttribType::UVEC3:
+    //            in.attributes[attrib_idx].u3 = 
+    //                glm::round(
+    //                bary.lambda[0] * static_cast<glm::vec3>(t.verts[0].attributes[attrib_idx].u3) +
+    //                bary.lambda[1] * static_cast<glm::vec3>(t.verts[1].attributes[attrib_idx].u3) +
+    //                bary.lambda[2] * static_cast<glm::vec3>(t.verts[2].attributes[attrib_idx].u3));
+    //            break;
+    //        case AttribType::UVEC4:
+    //            in.attributes[attrib_idx].u4 = 
+    //                glm::round(
+    //                bary.lambda[0] * static_cast<glm::vec4>(t.verts[0].attributes[attrib_idx].u4) +
+    //                bary.lambda[1] * static_cast<glm::vec4>(t.verts[1].attributes[attrib_idx].u4) +
+    //                bary.lambda[2] * static_cast<glm::vec4>(t.verts[2].attributes[attrib_idx].u4));
+    //            break;
+    //        case AttribType::EMPTY:
+    //            break;
+    //    }
+    //}
 }
 
 void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, const bool front_facing) {
+    ZoneScoped;
     Bounds bounds;
 
     // per vertex in triangle (calculate bounds)
@@ -821,10 +783,10 @@ void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, con
     // clip bounds to framebuffer
     std::uint32_t width = framebuffer->width;
     std::uint32_t height = framebuffer->height;
-    bounds.right = glm::min<float>(bounds.right, width - 1.0);
-    bounds.up = glm::min<float>(bounds.up, height - 1.0);
-    bounds.left = glm::max<float>(bounds.left, 0.0);
-    bounds.down = glm::max<float>(bounds.down, 0.0);
+    bounds.right = glm::min<float>(bounds.right + 0.5f, width - 1);
+    bounds.up = glm::min<float>(bounds.up + 0.5f, height - 1);
+    bounds.left = glm::max<float>(bounds.left - 0.5f, 0);
+    bounds.down = glm::max<float>(bounds.down - 0.5f, 0);
 
     Program *prog = mem.programs + mem.activatedProgram;
     InFragment in;
@@ -839,12 +801,13 @@ void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, con
 
     // TODO flipped framebuffer
     // per fragment in bounds
-    for(std::uint32_t y = bounds.down; y < bounds.up; y++) {
+    for(std::uint32_t y = bounds.down; y <= bounds.up; y++) {
         bool line_drawn_to = false;
         // scanline rendering
-        for(std::uint32_t x = bounds.left; x < bounds.right; x++) {
+        for(std::uint32_t x = bounds.left; x <= bounds.right; x++) {
             glm::uvec2 data_pos(x, y);
-            glm::vec2 pos(x + 0.5, y + 0.5);
+            glm::vec2 pos(x, y);
+            pos += 0.5f; // the center of a pixel
 
             if(!is_inside_triangle(pos, t, bary)) {
                 if(line_drawn_to) break;
@@ -856,10 +819,8 @@ void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, con
             
             create_fragment(mem, pos, bary, t, in);
     
-
             // stencil test
             if(!stencil_test_pass(mem, framebuffer, data_pos, front_facing)) continue;
-
 
             // depth test
             if(!depth_test_pass(mem, framebuffer, in, data_pos, front_facing)) continue;
@@ -901,6 +862,7 @@ void rasterize(GPUMemory& mem, Framebuffer *framebuffer, Primitive const& t, con
 
 void draw(GPUMemory& mem, DrawCommand& cm) {
 
+    //ZoneScoped;
     Framebuffer *framebuffer = mem.framebuffers + mem.activatedFramebuffer;
     Primitive t;
     Primitive u;
@@ -1008,6 +970,8 @@ void student_GPU_run(GPUMemory& mem, CommandBuffer const& cb) {
     ///
     /// V základu jde o to, že cb obsahuje příkazy, které se musí provést nad pamětí mem.
     /// Správně fungující grafická karta dobře interpretuje příkazy v cb a správně změní obsah paměti mem.
+    
+    //ZoneScoped;
 
     mem.gl_DrawID = 0;
 

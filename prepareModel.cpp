@@ -30,7 +30,7 @@ void process_node(GPUMemory& mem, CommandBuffer& cb, Node const& node, Model con
         pushSetBackfaceCullingCommand(cb, !mesh.doubleSided);
         pushDrawCommand(cb, mesh.nofIndices);
 
-        glm::mat4 inverse_transpose_model = glm::transpose(glm::inverse(model_matrix));
+        glm::mat4 inverse_transpose_model = glm::inverse(glm::transpose(model_matrix));
 
         mem.uniforms[getUniformLocation(draw_counter, MODEL_MATRIX                  )].m4 = model_matrix;
         mem.uniforms[getUniformLocation(draw_counter, INVERSE_TRANSPOSE_MODEL_MATRIX)].m4 = inverse_transpose_model;
@@ -96,9 +96,9 @@ void student_drawModel_vertexShader(OutVertex& outVertex, InVertex const& inVert
     const glm::vec3& normal = inVertex.attributes[1].v3;
     const glm::vec2& uv = inVertex.attributes[2].v2;
 
-    // position world-space
+    // position in world-space
     outVertex.attributes[0].v3 = model * glm::vec4(position, 1.0f);
-    // normal world-space
+    // normal in world-space
     outVertex.attributes[1].v3 = inverse_transpose * glm::vec4(normal, 0.0f);
     // texture coords (uv)
     outVertex.attributes[2].v2 = uv;
@@ -106,7 +106,7 @@ void student_drawModel_vertexShader(OutVertex& outVertex, InVertex const& inVert
     outVertex.attributes[3].v4 = light * glm::vec4(outVertex.attributes[0].v3, 1.0f);
 
     // position
-    outVertex.gl_Position = projection * glm::vec4(outVertex.attributes[0].v3, 1.0f);
+    outVertex.gl_Position = projection * model * glm::vec4(position, 1.0f);
 
 }
 //! [drawModel_vs]
@@ -115,7 +115,7 @@ void student_drawModel_vertexShader(OutVertex& outVertex, InVertex const& inVert
 #include<studentSolution/shaderFunctions.hpp>
 
 /**
- * @brief This functionrepresents fragment shader of texture rendering method.
+ * @brief This functionrepresents fragment shader outexture rendering method.
  *
  * @param outFragment output fragment
  * @param inFragment input fragment
@@ -123,22 +123,73 @@ void student_drawModel_vertexShader(OutVertex& outVertex, InVertex const& inVert
  */
 //! [drawModel_fs]
 void student_drawModel_fragmentShader(OutFragment& outFragment, InFragment const& inFragment, ShaderInterface const& si){
-    (void)outFragment;
-    (void)inFragment;
-    (void)si;
-    /// \todo Tato funkce reprezentujte fragment shader.<br>
-    /// Vašim úkolem je správně obarvit fragmenty a osvětlit je pomocí lambertova osvětlovacího modelu.
-    /// Bližší informace jsou uvedeny na hlavní stránce dokumentace.
     
-    std::uint32_t texture_id = si.uniforms[getUniformLocation(si.gl_DrawID, TEXTURE_ID)].i1;
+    std::int32_t texture_id = si.uniforms[getUniformLocation(si.gl_DrawID, TEXTURE_ID)].i1;
+    std::int32_t shadowmap_id = si.uniforms[getUniformLocation(si.gl_DrawID, SHADOWMAP_ID)].i1;
+
+    std::int32_t double_sided = si.uniforms[getUniformLocation(si.gl_DrawID, DOUBLE_SIDED)].i1;
+
+    glm::vec3 light_position = si.uniforms[getUniformLocation(si.gl_DrawID, LIGHT_POSITION)].v3;
+    glm::vec3 camera_position = si.uniforms[getUniformLocation(si.gl_DrawID, CAMERA_POSITION)].v3;
+
+    glm::vec3 position = inFragment.attributes[0].v3;
+    glm::vec3 normal = inFragment.attributes[1].v3;
     glm::vec2 uv = inFragment.attributes[2].v2;
+    glm::vec4 shadow_position = inFragment.attributes[3].v4;
+
+    if(double_sided > 0 && glm::dot(camera_position - position, normal) < 0.0f) {
+        // flip normal if looking from the back
+        normal = -normal;
+    }
+
+    glm::vec3 ambient_color = si.uniforms[getUniformLocation(si.gl_DrawID, AMBIENT_LIGHT_COLOR)].v3;
+    glm::vec3 light_color = si.uniforms[getUniformLocation(si.gl_DrawID, LIGHT_COLOR)].v3;
+    glm::vec3 diffuse_color;
+    glm::vec4 material_color;
 
     if(texture_id >= 0) {
+        // has texture
         const Texture& tex = si.textures[texture_id];
-        outFragment.gl_FragColor = student_read_texture(tex, uv);
+        material_color = student_read_texture(tex, uv);
     }
     else {
-        outFragment.gl_FragColor = si.uniforms[getUniformLocation(si.gl_DrawID, DIFFUSE_COLOR)].v4;
+        // no texture
+        material_color = si.uniforms[getUniformLocation(si.gl_DrawID, DIFFUSE_COLOR)].v4;
+    }
+
+    outFragment.discard = material_color.a < 0.5;
+    // discard fragment if it is too much transparent
+    if(outFragment.discard) return;
+
+    diffuse_color = material_color;
+
+    normal = glm::normalize(normal);
+        
+    glm::vec3 ambient_light = diffuse_color * ambient_color;
+    glm::vec3 diffuse_light = diffuse_color * light_color * glm::clamp(glm::dot(normal, glm::normalize(light_position - position)), 0.0f, 1.0f);
+    if(shadowmap_id < 0) {
+        // shadowmapping disabled
+        outFragment.gl_FragColor = glm::vec4(ambient_light + diffuse_light, material_color.a); 
+    }
+    else {
+        // shadowmapping enabled
+        shadow_position /= shadow_position.w;
+        if(shadow_position.x < 0 || shadow_position.y < 0 ||
+           shadow_position.x > 1 || shadow_position.y > 1) {
+            // not in shadowmap, render normaly
+            outFragment.gl_FragColor = glm::vec4(ambient_light + diffuse_light, material_color.a); 
+        }
+        else {
+            float shadow_depth = student_read_texture(si.textures[shadowmap_id], glm::vec2(shadow_position)).r;
+            if(shadow_position.z > shadow_depth) {
+                // in a shadow
+                outFragment.gl_FragColor = glm::vec4(ambient_light, material_color.a); 
+            }
+            else {
+                // not in a shadow
+                outFragment.gl_FragColor = glm::vec4(ambient_light + diffuse_light, material_color.a); 
+            } 
+        }
     }
 }
 //! [drawModel_fs]
