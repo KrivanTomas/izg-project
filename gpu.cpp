@@ -475,30 +475,29 @@ struct Bounds {
 
 struct Barycentrics {
     // hl3 confirmed
-    float lambda[3];
-    double inv_denom_cache = 0.0;
+    glm::vec3 lambda;
 };
 
 // also computes barycentrics
 inline bool is_inside_triangle(glm::vec2 pos, Primitive const& t, Barycentrics& bary) {
     ZoneScoped;
-    glm::dvec2 a = t.verts[0].gl_Position;
-    glm::dvec2 b = t.verts[1].gl_Position;
-    glm::dvec2 c = t.verts[2].gl_Position;
-    glm::dvec2 p = pos;
+    //glm::dvec2 a = t.verts[0].gl_Position;
+    //glm::dvec2 b = t.verts[1].gl_Position;
+    //glm::dvec2 c = t.verts[2].gl_Position;
+    //glm::dvec2 p = pos;
 
-    glm::dvec2 v0 = b - a, v1 = c - a, v2 = p - a;
-    if(bary.inv_denom_cache == 0) {
-        bary.inv_denom_cache = 1.0f / (v0.x * v1.y - v1.x * v0.y);
-    }
+    //glm::dvec2 v0 = b - a, v1 = c - a, v2 = p - a;
+    //if(bary.inv_denom_cache == 0) {
+    //    bary.inv_denom_cache = 1.0f / (v0.x * v1.y - v1.x * v0.y);
+    //}
 
-    bary.lambda[1] = (v2.x * v1.y - v1.x * v2.y) * bary.inv_denom_cache;
-    bary.lambda[2] = (v0.x * v2.y - v2.x * v0.y) * bary.inv_denom_cache;
-    //bary.lambda[0] = ((v0.x - v2.x) * (v1.y - v2.y) - (v1.x - v2.x) * (v0.y - v2.y)) * inv_denom;
-    // this should really be 1 - (u + v), but then the some tests wouldn't pass
-    bary.lambda[0] = 1.0 - (bary.lambda[1] + bary.lambda[2] + 1e-10);
+    //bary.lambda[1] = (v2.x * v1.y - v1.x * v2.y) * bary.inv_denom_cache;
+    //bary.lambda[2] = (v0.x * v2.y - v2.x * v0.y) * bary.inv_denom_cache;
+    ////bary.lambda[0] = ((v0.x - v2.x) * (v1.y - v2.y) - (v1.x - v2.x) * (v0.y - v2.y)) * inv_denom;
+    //// this should really be 1 - (u + v), but then the some tests wouldn't pass
+    //bary.lambda[0] = 1.0 - (bary.lambda[1] + bary.lambda[2] + 1e-10);
 
-    bool inside = bary.lambda[1] >= 0.0f & bary.lambda[2] >= 0.0f & bary.lambda[0] >= 0.0f;
+    bool inside = bary.lambda[0] >= 0.0f && bary.lambda[1] >= 0.0f && bary.lambda[2] >= 0.0f;
 
     return inside;
 }
@@ -775,37 +774,79 @@ void rasterize(GPUMemory& mem, Framebuffer& framebuffer, Primitive const& t, con
     interface.uniforms = mem.uniforms;
 
 
+    glm::dvec2 v0 = t.verts[0].gl_Position, v1 = t.verts[1].gl_Position, v2 = t.verts[2].gl_Position; // triangle vertices
+
+    float area2 = (v1.x - v0.x) * (v2.y - v0.y) - (v2.x - v0.x) * (v1.y - v0.y);
+
+    // Coefficients for each lambda
+    double a0 = v1.x * v2.y - v2.x * v1.y;
+    double b0 = v1.y - v2.y;
+    double c0 = v2.x - v1.x;
+
+    double a1 = v2.x * v0.y - v0.x * v2.y;
+    double b1 = v2.y - v0.y;
+    double c1 = v0.x - v2.x;
+
+    double a2 = v0.x * v1.y - v1.x * v0.y;
+    double b2 = v0.y - v1.y;
+    double c2 = v1.x - v0.x;
+
+    double inv_area2 = 1.0 / area2;
+
+    // Deltas (per-unit steps)
+    glm::dvec3 dlambda_dx = glm::dvec3(b0, b1, b2) * inv_area2;
+
     // per fragment in bounds
     for(std::uint32_t y = bounds.down; y <= bounds.up; y++) {
         bool line_drawn_to = false;
         // scanline rendering
-        for(std::uint32_t x = bounds.left; x <= bounds.right; x++) {
+
+        std::uint32_t x_left = glm::floor(bounds.left);
+        std::uint32_t x_right = glm::ceil(bounds.right);
+        bary.lambda = glm::vec3(
+                (a0 + b0 * x_left + c0 * y) * inv_area2,
+                (a1 + b1 * x_left + c1 * y) * inv_area2,
+                (a2 + b2 * x_left + c2 * y) * inv_area2
+        );
+        for(std::uint32_t x = x_left; x <= x_right; x++) {
             glm::uvec2 data_pos(x, y);
             glm::vec2 pos(x, y);
             pos += 0.5f; // the center of a pixel
 
             if(!is_inside_triangle(pos, t, bary)) {
                 if(line_drawn_to) break;
+                bary.lambda += dlambda_dx;
                 continue;
             };
+
 
             line_drawn_to = true;
             out.discard = false;
             out.gl_FragColor = glm::vec4();
             // draw fragment
             
-            create_fragment(mem, pos, bary, t, in);
+            Barycentrics fake = bary;
+            create_fragment(mem, pos, fake, t, in);
     
             // stencil test
-            if(!stencil_test_pass(mem, framebuffer, data_pos, front_facing)) continue;
+            if(!stencil_test_pass(mem, framebuffer, data_pos, front_facing)) { 
+                bary.lambda += dlambda_dx;
+                continue;
+            }
 
             // depth test
-            if(!depth_test_pass(mem, framebuffer, in, data_pos, front_facing)) continue;
+            if(!depth_test_pass(mem, framebuffer, in, data_pos, front_facing)) {
+                bary.lambda += dlambda_dx;
+                continue;
+            }
 
             // fragment shader
             if(prog->fragmentShader) {
                 prog->fragmentShader(out, in, interface);
-                if(out.discard) continue;
+                if(out.discard) {
+                    bary.lambda += dlambda_dx;
+                    continue;
+                }
             }
 
             // write dppass stencil
@@ -825,6 +866,7 @@ void rasterize(GPUMemory& mem, Framebuffer& framebuffer, Primitive const& t, con
                 get_blended_frag_color(mem, framebuffer, data_pos, out.gl_FragColor);
                 write_frag_color(framebuffer, data_pos, out.gl_FragColor);
             }
+            bary.lambda += dlambda_dx;
         }
     }
 }
